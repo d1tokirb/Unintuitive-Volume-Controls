@@ -1,8 +1,8 @@
 import sys
 import math
 import random
-from PySide6.QtCore import Qt, QPoint, Signal, QTimer
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QRadialGradient
+from PySide6.QtCore import Qt, QPoint, Signal, QTimer, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QRadialGradient, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QPushButton, QStackedWidget, QLabel, QHBoxLayout, QSlider, QGridLayout,
@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 # A character set for the "encrypted" part of the text
-CHAR_SET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()"
+CHAR_SET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 class DecryptedLabel(QLabel):
     """
@@ -70,6 +70,8 @@ def color_distance(c1, c2):
     (r1, g1, b1, _) = c1.getRgb()
     (r2, g2, b2, _) = c2.getRgb()
     return ( (r1 - r2)**2 + (g1 - g2)**2 + (b1 - b2)**2 )**0.5
+
+# --- EXISTING WIDGETS ---
 
 class GravitySlider(QWidget):
     """A volume slider controlled by tilting it and letting 'gravity' set the value."""
@@ -253,6 +255,367 @@ class ColorMatcher(QWidget):
         volume = max(0, min(100, volume))
         self.volume_changed.emit(volume)
 
+# --- NEW WIDGETS ---
+
+class Slingshot(QWidget):
+    volume_changed = Signal(int)
+    
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(250, 250)
+        self._is_dragging = False
+        self._drag_pos = QPointF()
+        self._slingshot_base = QPointF()
+        
+        # Projectile state
+        self._is_firing = False
+        self._projectile_pos = QPointF()
+        self._projectile_vel = QPointF()
+        self._projectile_timer = QTimer(self)
+        self._projectile_timer.setInterval(16)
+        self._projectile_timer.timeout.connect(self._update_projectile_physics)
+
+    def _update_projectile_physics(self):
+        if not self._is_firing: return
+
+        GRAVITY = 0.1
+        ENERGY_LOSS = -0.85
+
+        self._projectile_vel.setY(self._projectile_vel.y() + GRAVITY)
+        self._projectile_pos += self._projectile_vel
+
+        w, h = self.width(), self.height()
+        radius = 8
+        if self._projectile_pos.x() < radius or self._projectile_pos.x() > w - radius:
+            self._projectile_vel.setX(self._projectile_vel.x() * ENERGY_LOSS)
+            self._projectile_pos.setX(max(radius, min(self._projectile_pos.x(), w - radius)))
+
+        if self._projectile_pos.y() < radius or self._projectile_pos.y() > h - radius:
+            self._projectile_vel.setY(self._projectile_vel.y() * ENERGY_LOSS)
+            self._projectile_pos.setY(max(radius, min(self._projectile_pos.y(), h - radius)))
+
+        if self._projectile_vel.manhattanLength() < 0.1 and self._projectile_pos.y() > h - 15:
+            self._is_firing = False
+            self._projectile_timer.stop()
+
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        self._slingshot_base = QPointF(w / 2, h * 0.8)
+        
+        # Draw slingshot frame
+        pen = QPen(QColor("#8B4513"), 15)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(self._slingshot_base, self._slingshot_base - QPointF(0, 50))
+        painter.drawLine(self._slingshot_base - QPointF(0, 50), self._slingshot_base - QPointF(30, 80))
+        painter.drawLine(self._slingshot_base - QPointF(0, 50), self._slingshot_base + QPointF(30, -80))
+
+        if self._is_dragging:
+            # Draw rubber band
+            painter.setPen(QPen(Qt.GlobalColor.black, 3))
+            painter.drawLine(self._slingshot_base - QPointF(30, 80), self._drag_pos)
+            painter.drawLine(self._slingshot_base + QPointF(30, -80), self._drag_pos)
+            # Draw projectile
+            painter.setBrush(Qt.GlobalColor.darkGray)
+            painter.drawEllipse(self._drag_pos, 8, 8)
+        
+        if self._is_firing:
+            painter.setBrush(Qt.GlobalColor.darkGray)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(self._projectile_pos, 8, 8)
+
+    def mousePressEvent(self, event):
+        self._is_firing = False
+        self._projectile_timer.stop()
+        self._is_dragging = True
+        self._drag_pos = event.position()
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._is_dragging:
+            self._drag_pos = event.position()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if not self._is_dragging: return
+        self._is_dragging = False
+        
+        pullback_vector = self._slingshot_base - self._drag_pos
+        distance = (pullback_vector.x()**2 + pullback_vector.y()**2)**0.5
+        volume = int(min(100, (distance / 200.0) * 100))
+        self.volume_changed.emit(volume)
+
+        self._is_firing = True
+        self._projectile_pos = QPointF(self._drag_pos)
+        FIRE_STRENGTH = 0.15
+        self._projectile_vel = pullback_vector * FIRE_STRENGTH
+        self._projectile_timer.start()
+        self.update()
+
+class UnstableIsotope(QWidget):
+    volume_changed = Signal(int)
+    
+    def __init__(self):
+        super().__init__()
+        self._true_value = 50.0
+        layout = QVBoxLayout(self)
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(0, 100)
+        self._slider.setValue(int(self._true_value))
+        
+        self._slider.valueChanged.connect(self.volume_changed.emit)
+        self._slider.sliderMoved.connect(self._update_true_value)
+        
+        layout.addStretch()
+        layout.addWidget(self._slider)
+        layout.addStretch()
+        
+        self._decay_timer = QTimer(self)
+        self._decay_timer.setInterval(50) # Faster timer for smoother decay
+        self._decay_timer.timeout.connect(self._decay)
+        self._decay_timer.start()
+
+    def _update_true_value(self, value):
+        """Syncs the float value when the user moves the slider."""
+        self._true_value = float(value)
+        
+    def _decay(self):
+        """Decays the float value and updates the integer slider."""
+        if self._true_value > 0:
+            # Decay rate is 0.25 per tick, which is 5 per second (0.25 * (1000/50))
+            self._true_value -= 0.25
+            if self._true_value < 0:
+                self._true_value = 0
+            
+            # Only update the slider if the integer value has changed
+            if self._slider.value() != int(self._true_value):
+                self._slider.setValue(int(self._true_value))
+            
+class PerfectCircle(QWidget):
+    volume_changed = Signal(int)
+
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(250, 250)
+        self._is_drawing = False
+        self._points = []
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self._points: return
+        
+        path = QPainterPath()
+        path.moveTo(self._points[0])
+        for point in self._points[1:]:
+            path.lineTo(point)
+        painter.setPen(QPen(Qt.GlobalColor.black, 3))
+        painter.drawPath(path)
+
+    def mousePressEvent(self, event):
+        self._is_drawing = True
+        self._points = [event.position()]
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._is_drawing:
+            self._points.append(event.position())
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if not self._is_drawing or len(self._points) < 10:
+            self._is_drawing = False
+            return
+        
+        self._is_drawing = False
+        # Analyze the circle
+        center_x = sum(p.x() for p in self._points) / len(self._points)
+        center_y = sum(p.y() for p in self._points) / len(self._points)
+        center = QPointF(center_x, center_y)
+        
+        radii = [((p.x() - center.x())**2 + (p.y() - center.y())**2)**0.5 for p in self._points]
+        avg_radius = sum(radii) / len(radii)
+        if avg_radius == 0:
+            self.volume_changed.emit(0)
+            return
+
+        # Calculate standard deviation of radii
+        variance = sum([(r - avg_radius)**2 for r in radii]) / len(radii)
+        std_dev = variance**0.5
+        
+        # Map deviation to volume (lower is better)
+        perfection = 1.0 - (std_dev / avg_radius)
+        volume = int(max(0, min(100, perfection * 150 - 50))) # Scale and shift
+        self.volume_changed.emit(volume)
+        
+        # Reset for next drawing
+        QTimer.singleShot(1000, self.clear_drawing)
+
+    def clear_drawing(self):
+        self._points = []
+        self.update()
+
+class BouncingBall(QWidget):
+    volume_changed = Signal(int)
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._ball_pos = QPointF(self.width() / 2, 20)
+        self._ball_vel = QPointF(0, 0)
+        self._bounces = 0
+        self._is_animating = False
+        self._is_dragging = False
+        self._mouse_history = []
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._update_physics)
+        
+    def mousePressEvent(self, event):
+        self._timer.stop()
+        self._is_animating = False
+        self._is_dragging = True
+        self._ball_vel = QPointF(0, 0)
+        self._bounces = 0
+        self.volume_changed.emit(0)
+        self._ball_pos = event.position()
+        self._mouse_history = [event.position()]
+        self.update()
+        
+    def mouseMoveEvent(self, event):
+        if self._is_dragging:
+            self._ball_pos = event.position()
+            self._mouse_history.append(event.position())
+            if len(self._mouse_history) > 5:
+                self._mouse_history.pop(0)
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._is_dragging:
+            self._is_dragging = False
+            self._is_animating = True
+            
+            # Fling mechanic
+            if len(self._mouse_history) > 1:
+                delta = self._mouse_history[-1] - self._mouse_history[0]
+                self._ball_vel = delta * 0.2 # Adjust multiplier for desired fling strength
+            else:
+                self._ball_vel = QPointF(0,0)
+
+            self._timer.start(16)
+
+    def _update_physics(self):
+        GRAVITY = 0.5
+        ENERGY_LOSS = -0.8
+        radius = 20
+        
+        # Update velocity and position
+        self._ball_vel.setY(self._ball_vel.y() + GRAVITY)
+        self._ball_pos += self._ball_vel
+        
+        w, h = self.width(), self.height()
+
+        # Wall collisions
+        if self._ball_pos.x() < radius or self._ball_pos.x() > w - radius:
+            self._ball_vel.setX(self._ball_vel.x() * ENERGY_LOSS)
+            self._ball_pos.setX(max(radius, min(self._ball_pos.x(), w - radius)))
+
+        if self._ball_pos.y() < radius:
+            self._ball_vel.setY(self._ball_vel.y() * ENERGY_LOSS)
+            self._ball_pos.setY(radius)
+
+        # Floor collision and bounce counting
+        if self._ball_pos.y() >= h - radius:
+            self._ball_pos.setY(h - radius)
+            # Only count bounce if it hits with significant downward velocity
+            if self._ball_vel.y() > 1:
+                self._bounces += 1
+                self.volume_changed.emit(min(100, self._bounces))
+            self._ball_vel.setY(self._ball_vel.y() * ENERGY_LOSS)
+
+        # Stop condition
+        if self._ball_vel.manhattanLength() < 0.1 and self._ball_pos.y() >= h - radius -1:
+            self._is_animating = False
+            self._timer.stop()
+
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.GlobalColor.red)
+        painter.drawEllipse(self._ball_pos, 20, 20)
+
+class MemoryGame(QWidget):
+    volume_changed = Signal(int)
+    def __init__(self):
+        super().__init__()
+        self.grid = QGridLayout(self)
+        self.symbols = ['A','A','B','B','C','C','D','D','E','E','F','F','G','G','H','H']
+        self.buttons = []
+        self.first_card = None
+        self.second_card = None
+        self.matched_pairs = 0
+        self.setup_game()
+
+    def setup_game(self):
+        # Clear existing buttons if any
+        for i in reversed(range(self.grid.count())): 
+            self.grid.itemAt(i).widget().setParent(None)
+
+        random.shuffle(self.symbols)
+        self.buttons = []
+        self.first_card = None
+        self.second_card = None
+        self.matched_pairs = 0
+        
+        for i in range(16):
+            button = QPushButton("?")
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            button.setProperty("symbol", self.symbols[i])
+            button.setProperty("index", i)
+            button.clicked.connect(self.card_clicked)
+            self.grid.addWidget(button, i // 4, i % 4)
+            self.buttons.append(button)
+
+    def card_clicked(self):
+        button = self.sender()
+        if not button.isEnabled() or (self.first_card and self.second_card):
+            return
+
+        button.setText(button.property("symbol"))
+
+        if not self.first_card:
+            self.first_card = button
+        elif button != self.first_card:
+            self.second_card = button
+            self.check_match()
+
+    def check_match(self):
+        if self.first_card.property("symbol") == self.second_card.property("symbol"):
+            self.first_card.setEnabled(False)
+            self.second_card.setEnabled(False)
+            self.matched_pairs += 1
+            volume = int((self.matched_pairs / 8.0) * 100)
+            self.volume_changed.emit(volume)
+            self.first_card = None
+            self.second_card = None
+        else:
+            QTimer.singleShot(1000, self.reset_cards)
+
+    def reset_cards(self):
+        if self.first_card: self.first_card.setText("?")
+        if self.second_card: self.second_card.setText("?")
+        self.first_card = None
+        self.second_card = None
+
+
+# --- MAIN WINDOW ---
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -267,16 +630,29 @@ class MainWindow(QMainWindow):
         self.menu_page = QWidget()
         self.setup_menu_page()
 
+        # Instantiate all controls
         self.gravity_control = GravitySlider()
         self.color_control = ColorMatcher()
+        self.slingshot_control = Slingshot()
+        self.isotope_control = UnstableIsotope()
+        self.circle_control = PerfectCircle()
+        self.bounce_control = BouncingBall()
+        self.memory_control = MemoryGame()
         
+        # Setup pages for all controls
         self.gravity_page = self.setup_volume_page("Gravity Slider", "Drag to tilt the bar. The volume is set by the resting position of the ball.", self.gravity_control)
         self.color_page = self.setup_volume_page("Color Matcher", "Recreate the target color using the RGB sliders.", self.color_control)
+        self.slingshot_page = self.setup_volume_page("Slingshot", "Pull back and release to set the volume.", self.slingshot_control)
+        self.isotope_page = self.setup_volume_page("Unstable Isotope", "The volume constantly decays over time.", self.isotope_control)
+        self.circle_page = self.setup_volume_page("Perfect Circle", "Draw a circle. Volume is based on its perfection.", self.circle_control)
+        self.bounce_page = self.setup_volume_page("Bouncing Ball", "Click and drag to fling the ball. Volume is set by floor bounces.", self.bounce_control)
+        self.memory_page = self.setup_volume_page("Memory Game", "Match all pairs. Volume increases with each match.", self.memory_control)
         
+        # Add all pages to the stacked widget
         self.stacked_widget.addWidget(self.menu_page)
-        self.stacked_widget.addWidget(self.gravity_page)
-        self.stacked_widget.addWidget(self.color_page)
-
+        for page in [self.gravity_page, self.color_page, self.slingshot_page, self.isotope_page, self.circle_page, self.bounce_page, self.memory_page]:
+            self.stacked_widget.addWidget(page)
+        
         QTimer.singleShot(100, self._check_visibility)
 
     def setup_menu_page(self):
@@ -298,38 +674,29 @@ class MainWindow(QMainWindow):
         button_grid = QGridLayout()
         button_grid.setSpacing(20)
 
-        btn_gravity = DecryptedLabel(text="Gravity Slider", speed=40)
-        btn_gravity.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
-        btn_gravity.setObjectName("MenuButton")
-        btn_gravity.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # List of (Button Text, Page Index)
+        buttons_to_create = [
+            ("Gravity Slider", 1), ("Color Matcher", 2),
+            ("Slingshot", 3), ("Unstable Isotope", 4),
+            ("Perfect Circle", 5), ("Bouncing Ball", 6),
+            ("Memory Game", 7)
+        ]
 
-        btn_color = DecryptedLabel(text="Color Matcher", speed=40)
-        btn_color.clicked.connect(lambda: (self.color_control.reset_challenge(), self.stacked_widget.setCurrentIndex(2)))
-        btn_color.setObjectName("MenuButton")
-        btn_color.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        
-        button_grid.addWidget(btn_gravity, 0, 0)
-        button_grid.addWidget(btn_color, 0, 1)
-        
-        self.labels_to_check.extend([title, btn_gravity, btn_color])
+        for i, (text, index) in enumerate(buttons_to_create):
+            button = DecryptedLabel(text=text, speed=40)
+            button.clicked.connect(lambda idx=index: self.stacked_widget.setCurrentIndex(idx))
+            button.setObjectName("MenuButton")
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            
+            button_grid.addWidget(button, i // 2, i % 2)
+            self.labels_to_check.append(button)
 
-        for i in range(24):
-            row_offset, col = divmod(i, 2)
-            row = 1 + row_offset
-            placeholder = DecryptedLabel(text=f"Placeholder {i+1}", speed=60)
-            placeholder.setObjectName("MenuButton")
-            placeholder.setEnabled(False)
-            placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            button_grid.addWidget(placeholder, row, col)
-            self.labels_to_check.append(placeholder)
-
-        button_grid.setColumnStretch(0, 1)
-        button_grid.setColumnStretch(1, 1)
         main_layout.addWidget(title, stretch=0)
         main_layout.addLayout(button_grid, stretch=1)
         
         scroll_area.setWidget(container_widget)
         scroll_area.verticalScrollBar().valueChanged.connect(self._check_visibility)
+        self.labels_to_check.insert(0, title)
 
     def _check_visibility(self):
         scroll_area = self.menu_page.findChild(QScrollArea)
@@ -363,7 +730,8 @@ class MainWindow(QMainWindow):
         instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
         volume_label = QLabel("Volume: --")
         volume_label.setObjectName("VolumeLabel")
-        control_widget.volume_changed.connect(lambda v: volume_label.setText(f"Volume: {v}"))
+        if hasattr(control_widget, 'volume_changed'):
+            control_widget.volume_changed.connect(lambda v: volume_label.setText(f"Volume: {v}"))
         back_button = QPushButton("← Back to Menu")
         back_button.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
 
@@ -458,3 +826,4 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
