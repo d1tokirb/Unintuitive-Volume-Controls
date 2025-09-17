@@ -308,12 +308,15 @@ class Slingshot(QWidget):
         self._slingshot_base = QPointF(w / 2, h * 0.8)
         
         # Draw slingshot frame
-        pen = QPen(QColor("#8B4513"), 15)
+        pen = QPen(QColor("#8B4513"), 20) # Thicker frame
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawLine(self._slingshot_base, self._slingshot_base - QPointF(0, 50))
         painter.drawLine(self._slingshot_base - QPointF(0, 50), self._slingshot_base - QPointF(30, 80))
         painter.drawLine(self._slingshot_base - QPointF(0, 50), self._slingshot_base + QPointF(30, -80))
+
+        projectile_pen = QPen(Qt.GlobalColor.black, 2)
+        projectile_brush = QBrush(Qt.GlobalColor.darkGray)
 
         if self._is_dragging:
             # Draw rubber band
@@ -321,12 +324,13 @@ class Slingshot(QWidget):
             painter.drawLine(self._slingshot_base - QPointF(30, 80), self._drag_pos)
             painter.drawLine(self._slingshot_base + QPointF(30, -80), self._drag_pos)
             # Draw projectile
-            painter.setBrush(Qt.GlobalColor.darkGray)
+            painter.setPen(projectile_pen)
+            painter.setBrush(projectile_brush)
             painter.drawEllipse(self._drag_pos, 8, 8)
         
         if self._is_firing:
-            painter.setBrush(Qt.GlobalColor.darkGray)
-            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setPen(projectile_pen)
+            painter.setBrush(projectile_brush)
             painter.drawEllipse(self._projectile_pos, 8, 8)
 
     def mousePressEvent(self, event):
@@ -513,31 +517,30 @@ class BouncingBall(QWidget):
         ENERGY_LOSS = -0.8
         radius = 20
         
-        # Update velocity and position
         self._ball_vel.setY(self._ball_vel.y() + GRAVITY)
         self._ball_pos += self._ball_vel
         
         w, h = self.width(), self.height()
+        bounced = False
 
-        # Wall collisions
         if self._ball_pos.x() < radius or self._ball_pos.x() > w - radius:
             self._ball_vel.setX(self._ball_vel.x() * ENERGY_LOSS)
             self._ball_pos.setX(max(radius, min(self._ball_pos.x(), w - radius)))
+            bounced = True
 
         if self._ball_pos.y() < radius:
             self._ball_vel.setY(self._ball_vel.y() * ENERGY_LOSS)
             self._ball_pos.setY(radius)
-
-        # Floor collision and bounce counting
-        if self._ball_pos.y() >= h - radius:
+            bounced = True
+        elif self._ball_pos.y() >= h - radius:
             self._ball_pos.setY(h - radius)
-            # Only count bounce if it hits with significant downward velocity
-            if self._ball_vel.y() > 1:
-                self._bounces += 1
-                self.volume_changed.emit(min(100, self._bounces))
             self._ball_vel.setY(self._ball_vel.y() * ENERGY_LOSS)
+            bounced = True
 
-        # Stop condition
+        if bounced and self._ball_vel.manhattanLength() > 1.5:
+             self._bounces += 1
+             self.volume_changed.emit(min(100, self._bounces))
+
         if self._ball_vel.manhattanLength() < 0.1 and self._ball_pos.y() >= h - radius -1:
             self._is_animating = False
             self._timer.stop()
@@ -547,6 +550,7 @@ class BouncingBall(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(Qt.GlobalColor.black, 4))
         painter.setBrush(Qt.GlobalColor.red)
         painter.drawEllipse(self._ball_pos, 20, 20)
 
@@ -554,6 +558,7 @@ class MemoryGame(QWidget):
     volume_changed = Signal(int)
     def __init__(self):
         super().__init__()
+        self.setObjectName("MemoryGameWidget")
         self.grid = QGridLayout(self)
         self.symbols = ['A','A','B','B','C','C','D','D','E','E','F','F','G','G','H','H']
         self.buttons = []
@@ -563,7 +568,6 @@ class MemoryGame(QWidget):
         self.setup_game()
 
     def setup_game(self):
-        # Clear existing buttons if any
         for i in reversed(range(self.grid.count())): 
             self.grid.itemAt(i).widget().setParent(None)
 
@@ -645,7 +649,7 @@ class MainWindow(QMainWindow):
         self.slingshot_page = self.setup_volume_page("Slingshot", "Pull back and release to set the volume.", self.slingshot_control)
         self.isotope_page = self.setup_volume_page("Unstable Isotope", "The volume constantly decays over time.", self.isotope_control)
         self.circle_page = self.setup_volume_page("Perfect Circle", "Draw a circle. Volume is based on its perfection.", self.circle_control)
-        self.bounce_page = self.setup_volume_page("Bouncing Ball", "Click and drag to fling the ball. Volume is set by floor bounces.", self.bounce_control)
+        self.bounce_page = self.setup_volume_page("Bouncing Ball", "Click and drag to fling the ball. Volume is set by wall bounces.", self.bounce_control)
         self.memory_page = self.setup_volume_page("Memory Game", "Match all pairs. Volume increases with each match.", self.memory_control)
         
         # Add all pages to the stacked widget
@@ -789,6 +793,11 @@ if __name__ == "__main__":
         }
         QPushButton:hover {
             background-color: #e0e0e0;
+        }
+        #MemoryGameWidget QPushButton {
+            border: 4px solid black;
+            font-size: 24px;
+            font-weight: bold;
         }
         QLabel#MenuButton {
             background-color: white;
